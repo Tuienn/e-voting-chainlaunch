@@ -1,0 +1,8 @@
+.agents
+.codex
+.git
+Dockerfile
+*.test
+tmp
+dist
+build
