@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/hex"
 	"fmt"
 
@@ -44,7 +45,6 @@ func (c *VoteLedgerContract) CommitMerkleRoot(ctx contractapi.TransactionContext
 		DocType:           "root",
 		ElectionID:        electionID,
 		MerkleRoot:        hex.EncodeToString(root),
-		MerkleRootHex:     hex.EncodeToString(root),
 		VoteCount:         voteCount,
 		Committed:         true,
 		ClosedAtTxSeconds: txTimestampSeconds(ctx),
@@ -68,10 +68,13 @@ func (c *VoteLedgerContract) GetMerkleRoot(ctx contractapi.TransactionContextInt
 }
 
 func (c *VoteLedgerContract) VerifyVoteReceipt(ctx contractapi.TransactionContextInterface, electionID, blindedCommitment, proofJSON string) (string, error) {
-	leaf, err := parseHash32(blindedCommitment, "blindedCommitment")
-	if err != nil {
+	// Validate format nhưng dùng chính chuỗi hex (lowercase) làm input cho hash.
+	// Off-chain (libs/fabric/src/lib/merketree/index.ts) build leaf bằng
+	// sha256(utf8(commitment_hex_string)), nên on-chain phải băm cùng cách.
+	if _, err := parseHash32(blindedCommitment, "blindedCommitment"); err != nil {
 		return "", err
 	}
+	leaf := sha256Bytes([]byte(blindedCommitment))
 
 	out := ReceiptVerifyView{
 		ElectionID:    electionID,
@@ -95,16 +98,12 @@ func (c *VoteLedgerContract) VerifyVoteReceipt(ctx contractapi.TransactionContex
 		out.ProofError = err.Error()
 		return mustJSON(out), nil
 	}
-	computedRoot, err := applyProof(leaf, proof)
-	if err != nil {
-		out.ProofError = err.Error()
-		return mustJSON(out), nil
-	}
+	computedRoot := applyProof(leaf, proof)
 	rootBytes, err := parseHash32(root.MerkleRoot, "merkleRoot")
 	if err != nil {
 		return "", err
 	}
-	out.InElection = string(computedRoot) == string(rootBytes)
+	out.InElection = bytes.Equal(computedRoot, rootBytes)
 	return mustJSON(out), nil
 }
 

@@ -19,7 +19,6 @@ type MerkleRootView struct {
 	DocType           string `json:"docType,omitempty"`
 	ElectionID        string `json:"electionId"`
 	MerkleRoot        string `json:"merkleRoot,omitempty"`
-	MerkleRootHex     string `json:"merkleRootHex,omitempty"`
 	VoteCount         uint64 `json:"voteCount,omitempty"`
 	Committed         bool   `json:"committed"`
 	ClosedAtTxSeconds string `json:"closedAt,omitempty"`
