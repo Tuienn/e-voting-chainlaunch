@@ -93,10 +93,12 @@ func saveStats(ctx contractapi.TransactionContextInterface, electionID string, s
 	return ctx.GetStub().PutState(key, encodeStats(stats))
 }
 
-func encodeUsedReveal(candidateID string, payloadHash []byte) []byte {
-	out := make([]byte, 0, len(candidateID)+34)
-	out = appendUvarint(out, uint64(len(candidateID)))
-	out = append(out, []byte(candidateID)...)
+// encodeUsedReveal lưu chuỗi JSON canonical của danh sách ứng viên kèm payload hash.
+// Cơ chế uvarint-len đã variable-length nên dùng được cho chuỗi JSON độ dài bất kỳ.
+func encodeUsedReveal(candidateIdsJSON string, payloadHash []byte) []byte {
+	out := make([]byte, 0, len(candidateIdsJSON)+34)
+	out = appendUvarint(out, uint64(len(candidateIdsJSON)))
+	out = append(out, []byte(candidateIdsJSON)...)
 	return append(out, payloadHash...)
 }
 

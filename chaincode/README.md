@@ -47,8 +47,8 @@ Tất cả state được lưu bằng composite key trong World State của Fabr
 |---|---|---|
 | `vote` | `vote\nelectionId\nvoteId` | Bản ghi phiếu bầu |
 | `root` | `root\nelectionId` | Merkle root của election |
-| `tally` | `tally\nelectionId\ncandidateId` | Số phiếu theo ứng viên |
-| `usedReveal` | `usedReveal\nelectionId\nrevealKeyBase64URL` | Khóa reveal đã dùng |
+| `tally` | `tally\nelectionId\ncandidateId` | Số lượt chọn theo ứng viên (mỗi lá phiếu có thể chọn nhiều ứng viên) |
+| `usedReveal` | `usedReveal\nelectionId\nrevealKeyBase64URL` | Khóa reveal đã dùng (lưu kèm danh sách ứng viên đã chọn) |
 | `stats` | `stats\nelectionId` | Thống kê tổng hợp |
 
 ### Stats (thống kê election)
@@ -58,7 +58,7 @@ Mỗi election có một `Stats` object được cập nhật atomic:
 ```go
 type Stats struct {
     TotalVoteCount uint64  // tổng phiếu đã SubmitVote
-    RevealCount    uint64  // tổng phiếu đã RevealVoteCompact
+    RevealCount    uint64  // tổng LÁ PHIẾU đã RevealVoteCompact (đếm 1 lần/phiếu, KHÔNG theo số ứng viên được chọn)
 }
 ```
 
@@ -306,21 +306,22 @@ type Stats struct {
 
 **Loại:** `invoke` (write transaction)
 
-**Mục đích:** Ghi nhận việc voter giải mù phiếu và cập nhật kết quả bầu cử. Đây là hàm cốt lõi của pha kiểm phiếu.
+**Mục đích:** Ghi nhận việc voter giải mù phiếu và cập nhật kết quả bầu cử. Đây là hàm cốt lõi của pha kiểm phiếu. Mỗi lá phiếu có thể chọn **nhiều** ứng viên (`candidateIds`).
 
 **Tham số:**
 
 | Tham số | Kiểu | Mô tả |
 |---|---|---|
 | `electionID` | string | ID của cuộc bầu cử |
-| `candidateID` | string | ID ứng viên được bầu |
+| `candidateIdsJson` | string | Chuỗi JSON canonical của mảng ứng viên đã chọn, vd `["64f...a1","64f...c3"]` (đã dedupe + sort lexicographic ở backend) |
 | `revealKey` | string | SHA256(h_bytes \|\| sPrime_bytes) hex 64 chars |
-| `revealPayloadHash` | string | SHA256("reveal-v1" \|\| len(cId) \|\| cId \|\| h32 \|\| sPrime32) hex 64 chars |
+| `revealPayloadHash` | string | SHA256("reveal-v2" \|\| uint32be(len(candidateIdsJson)) \|\| candidateIdsJson \|\| h32 \|\| sPrime32) hex 64 chars |
 
 **Logic thực hiện:**
 
 ```
-1. Validate: electionID, candidateID không rỗng
+1. Validate: electionID không rỗng; parse candidateIdsJson thành []string
+   (mảng không rỗng, từng phần tử không rỗng)
 2. Parse revealKey thành keyHash [32]byte
 3. Parse revealPayloadHash thành payloadHash [32]byte
 4. loadMerkleRoot(electionID)
@@ -329,13 +330,15 @@ type Stats struct {
 5. Tính usedKey = composite(usedReveal, electionID, base64URL(keyHash))
 6. GetState(usedKey) → kiểm tra revealKey chưa được dùng
    → Nếu đã tồn tại: từ chối (chặn replay attack on-chain)
-7. PutState(usedKey, encode(candidateID, payloadHash))
-   (đánh dấu revealKey đã dùng, lưu kèm candidateID và payloadHash)
-8. Tính tallyKey = composite(tally, electionID, candidateID)
-9. loadUint64(tallyKey) → count; PutState(tallyKey, count+1)
-   (tăng số phiếu cho candidateID)
-10. loadStats + stats.RevealCount++ + saveStats
-11. Trả UsedRevealView JSON
+7. PutState(usedKey, encode(candidateIdsJson, payloadHash))
+   (đánh dấu revealKey đã dùng, lưu kèm chuỗi candidateIds và payloadHash)
+8. VỚI MỖI candidateID trong mảng:
+   - tallyKey = composite(tally, electionID, candidateID)
+   - loadUint64(tallyKey) → count; PutState(tallyKey, count+1)
+   (tăng 1 lượt chọn cho từng ứng viên)
+9. loadStats + stats.RevealCount++ + saveStats
+   (RevealCount tăng ĐÚNG 1 LẦN cho cả lá phiếu, không theo số ứng viên)
+10. Trả UsedRevealView JSON
 ```
 
 **Response:** `UsedRevealView` JSON
@@ -343,7 +346,7 @@ type Stats struct {
 ```json
 {
   "electionId": "...",
-  "candidateId": "...",
+  "candidateIds": ["64f...a1", "64f...c3"],
   "revealKey": "base64url-encoded-key",
   "revealKeyHex": "hex-encoded-key",
   "revealPayloadHash": "base64url-encoded-hash",
@@ -352,13 +355,16 @@ type Stats struct {
 ```
 
 **Điều kiện từ chối:**
+- `candidateIdsJson` không phải JSON array hợp lệ / mảng rỗng / có phần tử rỗng
 - `revealKey` hoặc `revealPayloadHash` không phải hex 64 chars
 - Election chưa commit Merkle root (chưa đóng)
 - `revealKey` đã được dùng (replay attack)
 
 **Lưu ý bảo mật:**
-- `revealPayloadHash` lưu nhưng không verify on-chain — chaincode tin tưởng backend đã verify chữ ký EC-Schnorr. Hash này là commitment của `(candidateId, h, sPrime)` để audit sau nếu cần.
+- `revealPayloadHash` lưu nhưng không verify on-chain — chaincode tin tưởng backend đã verify chữ ký EC-Schnorr. Hash này là commitment của `(candidateIds, h, sPrime)` để audit sau nếu cần.
+- Chaincode không enforce `maxSelectableCandidates` hay danh sách ứng viên hợp lệ — việc đó do `reveal-vote` service kiểm tra trước khi gọi chaincode (chaincode giữ tối giản, chỉ parse JSON + tally).
 - Chaincode không verify chữ ký Schnorr — việc này được thực hiện bởi `reveal-vote` service trước khi gọi chaincode.
+- Quy ước canonical (dedupe + sort + `JSON.stringify`) của `candidateIds` phải giống hệt giữa client (lúc ký) và backend (lúc verify/hash) để chữ ký verify đúng.
 
 ---
 
@@ -398,13 +404,15 @@ type Stats struct {
 }
 ```
 
+> **Lưu ý:** Giá trị của mỗi ứng viên là **số lượt chọn** (selections). Khi bầu nhiều ứng viên, **tổng các giá trị** trong `tally` (∑ selections) có thể **lớn hơn** `RevealCount` (số lá phiếu) — vì một lá phiếu chọn N ứng viên sẽ cộng N vào tổng tally nhưng chỉ +1 vào `RevealCount`. Số lá phiếu đã reveal lấy từ `GetAuditCounts.revealCount`.
+
 ---
 
 ### 5.3 GetUsedReveal
 
 **Loại:** `query` (read-only)
 
-**Mục đích:** Kiểm tra một `revealKey` đã được dùng chưa và gắn với candidateID nào. Dùng cho audit.
+**Mục đích:** Kiểm tra một `revealKey` đã được dùng chưa và gắn với (các) ứng viên nào. Dùng cho audit và recovery (Option B: khi invoke fail nhưng chain đã ghi).
 
 **Tham số:**
 
@@ -418,8 +426,8 @@ type Stats struct {
 ```
 1. Parse revealKey → keyHash
 2. compositeKey(usedReveal, electionID, base64URL(keyHash))
-3. GetState → decode (candidateID, payloadHash)
-4. Trả UsedRevealView
+3. GetState → decode (candidateIdsJson, payloadHash) → parse candidateIds []string
+4. Trả UsedRevealView (candidateIds là mảng)
 ```
 
 ---
@@ -428,30 +436,30 @@ type Stats struct {
 
 **Loại:** `query` (read-only)
 
-**Mục đích:** Tính `revealPayloadHash` từ `(candidateId, h, sPrime)`. Hàm utility cho audit và debug — cho phép kiểm chứng hash được ghi trên chain có khớp với input không.
+**Mục đích:** Tính `revealPayloadHash` từ `(candidateIds, h, sPrime)`. Hàm utility cho audit và debug — cho phép kiểm chứng hash được ghi trên chain có khớp với input không.
 
 **Tham số:**
 
 | Tham số | Kiểu | Mô tả |
 |---|---|---|
-| `candidateID` | string | ID ứng viên |
+| `candidateIdsJson` | string | Chuỗi JSON canonical của mảng ứng viên, vd `["64f...a1","64f...c3"]` |
 | `h` | string | Scalar h hex 64 chars |
 | `sPrime` | string | Scalar sPrime hex 64 chars |
 
 **Logic thực hiện:**
 
 ```
-hash = SHA256("reveal-v1" || uint32_big_endian(len(candidateID)) || candidateID || h[32] || sPrime[32])
+hash = SHA256("reveal-v2" || uint32_big_endian(len(candidateIdsJson)) || candidateIdsJson || h[32] || sPrime[32])
 ```
 
 **Response:** `PayloadHashView` JSON
 
 ```json
 {
-  "candidateId": "...",
+  "candidateIds": ["64f...a1", "64f...c3"],
   "revealPayloadHash": "base64url...",
   "revealPayloadHashHex": "hex64chars...",
-  "hashDefinition": "sha256('reveal-v1' || uint32be(len(candidateId)) || candidateId || h32 || sPrime32)"
+  "hashDefinition": "sha256('reveal-v2' || uint32be(len(candidateIdsJson)) || candidateIdsJson || h32 || sPrime32)"
 }
 ```
 
@@ -475,7 +483,7 @@ stats:         stats + \x00 + electionId
 |---|---|
 | `VoteView` | JSON marshal → bytes |
 | `MerkleRootView` | JSON marshal → bytes |
-| `usedReveal` | binary: `candidateId_len(4 bytes big-endian) + candidateId + payloadHash(32 bytes)` |
+| `usedReveal` | binary: `candidateIdsJson_len(uvarint) + candidateIdsJson + payloadHash(32 bytes)` (lưu chuỗi JSON canonical của mảng ứng viên) |
 | `tally` | binary: uint64 big-endian (8 bytes) |
 | `Stats` | JSON marshal → bytes |
 
@@ -498,7 +506,8 @@ Phase 2: CLOSED (đóng bầu cử)
 
 Phase 3: REVEAL (kiểm phiếu)
   RevealVoteCompact gọi nhiều lần
-  → Mỗi lần: tally[candidateId]++, stats.RevealCount++
+  → Mỗi lần: tally[mỗi candidateId trong phiếu]++ (có thể nhiều ứng viên),
+             stats.RevealCount++ (đúng 1 lần/phiếu)
   → Điều kiện tiên quyết: root.Committed = true
 ```
 
@@ -551,7 +560,7 @@ Stats {
 // Kết quả kiểm phiếu theo ứng viên
 TallyView {
     ElectionID: string
-    Tally:      map[string]uint64  // { candidateId: count }
+    Tally:      map[string]uint64  // { candidateId: số lượt chọn }; ∑ = tổng lượt chọn (>= số phiếu)
 }
 
 // Thống kê audit
@@ -566,7 +575,7 @@ AuditCountsView {
 // Bản ghi reveal đã dùng
 UsedRevealView {
     ElectionID:         string
-    CandidateID:        string
+    CandidateIDs:       []string // danh sách ứng viên đã chọn (canonical)
     RevealKey:          string // base64URL encoded
     RevealKeyHex:       string // hex 64 chars
     RevealPayloadHash:  string // base64URL encoded
@@ -585,7 +594,7 @@ ReceiptVerifyView {
 
 // Hash payload reveal
 PayloadHashView {
-    CandidateID:          string
+    CandidateIDs:         []string // danh sách ứng viên (canonical)
     RevealPayloadHash:    string // base64URL
     RevealPayloadHashHex: string // hex 64 chars
     HashDefinition:       string // mô tả công thức hash

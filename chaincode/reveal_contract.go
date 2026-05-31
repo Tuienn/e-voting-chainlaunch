@@ -2,16 +2,40 @@ package main
 
 import (
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 
 	"github.com/hyperledger/fabric-contract-api-go/contractapi"
 )
 
-func (c *VoteLedgerContract) RevealVoteCompact(ctx contractapi.TransactionContextInterface, electionID, candidateID, revealKey, revealPayloadHash string) (string, error) {
+// parseCandidateIds giải mã chuỗi JSON canonical (vd: ["a","b"]) thành []string và
+// kiểm tra cơ bản: mảng không rỗng và từng phần tử không rỗng. Việc enforce
+// maxSelectableCandidates / candidate ∈ election do backend đảm nhiệm (chaincode tối giản).
+func parseCandidateIds(candidateIdsJSON string) ([]string, error) {
+	if err := requireNonEmpty(candidateIdsJSON, "candidateIds"); err != nil {
+		return nil, err
+	}
+	var ids []string
+	if err := json.Unmarshal([]byte(candidateIdsJSON), &ids); err != nil {
+		return nil, fmt.Errorf("candidateIds must be a JSON array of strings: %w", err)
+	}
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("candidateIds must not be empty")
+	}
+	for _, id := range ids {
+		if err := requireNonEmpty(id, "candidateId"); err != nil {
+			return nil, err
+		}
+	}
+	return ids, nil
+}
+
+func (c *VoteLedgerContract) RevealVoteCompact(ctx contractapi.TransactionContextInterface, electionID, candidateIdsJSON, revealKey, revealPayloadHash string) (string, error) {
 	if err := requireNonEmpty(electionID, "electionId"); err != nil {
 		return "", err
 	}
-	if err := requireNonEmpty(candidateID, "candidateId"); err != nil {
+	candidateIDs, err := parseCandidateIds(candidateIdsJSON)
+	if err != nil {
 		return "", err
 	}
 	keyHash, err := parseHash32(revealKey, "revealKey")
@@ -42,22 +66,26 @@ func (c *VoteLedgerContract) RevealVoteCompact(ctx contractapi.TransactionContex
 		return "", fmt.Errorf("revealKey %s has already been used", hashToBase64URL(keyHash))
 	}
 
-	if err := ctx.GetStub().PutState(usedKey, encodeUsedReveal(candidateID, payloadHash)); err != nil {
+	if err := ctx.GetStub().PutState(usedKey, encodeUsedReveal(candidateIdsJSON, payloadHash)); err != nil {
 		return "", err
 	}
 
-	tallyKey, err := compositeKey(ctx, tallyPrefix, electionID, candidateID)
-	if err != nil {
-		return "", err
-	}
-	count, err := loadUint64(ctx, tallyKey)
-	if err != nil {
-		return "", err
-	}
-	if err := ctx.GetStub().PutState(tallyKey, encodeUint64(count+1)); err != nil {
-		return "", err
+	// Tally tăng 1 cho TỪNG ứng viên được chọn trong lá phiếu.
+	for _, candidateID := range candidateIDs {
+		tallyKey, err := compositeKey(ctx, tallyPrefix, electionID, candidateID)
+		if err != nil {
+			return "", err
+		}
+		count, err := loadUint64(ctx, tallyKey)
+		if err != nil {
+			return "", err
+		}
+		if err := ctx.GetStub().PutState(tallyKey, encodeUint64(count+1)); err != nil {
+			return "", err
+		}
 	}
 
+	// RevealCount đếm theo SỐ LÁ PHIẾU đã reveal (1 lần/ballot), không theo số ứng viên.
 	stats, err := loadStats(ctx, electionID)
 	if err != nil {
 		return "", err
@@ -69,7 +97,7 @@ func (c *VoteLedgerContract) RevealVoteCompact(ctx contractapi.TransactionContex
 
 	return mustJSON(UsedRevealView{
 		ElectionID:         electionID,
-		CandidateID:        candidateID,
+		CandidateIDs:       candidateIDs,
 		RevealKey:          hashToBase64URL(keyHash),
 		RevealKeyHex:       hex.EncodeToString(keyHash),
 		RevealPayloadHash:  hashToBase64URL(payloadHash),
@@ -126,13 +154,17 @@ func (c *VoteLedgerContract) GetUsedReveal(ctx contractapi.TransactionContextInt
 	if len(data) == 0 {
 		return "", fmt.Errorf("revealKey %s has not been used", hashToBase64URL(keyHash))
 	}
-	candidateID, payloadHash, err := decodeUsedReveal(data)
+	candidateIdsJSON, payloadHash, err := decodeUsedReveal(data)
+	if err != nil {
+		return "", err
+	}
+	candidateIDs, err := parseCandidateIds(candidateIdsJSON)
 	if err != nil {
 		return "", err
 	}
 	return mustJSON(UsedRevealView{
 		ElectionID:         electionID,
-		CandidateID:        candidateID,
+		CandidateIDs:       candidateIDs,
 		RevealKey:          hashToBase64URL(keyHash),
 		RevealKeyHex:       hex.EncodeToString(keyHash),
 		RevealPayloadHash:  hashToBase64URL(payloadHash),
@@ -140,8 +172,9 @@ func (c *VoteLedgerContract) GetUsedReveal(ctx contractapi.TransactionContextInt
 	}), nil
 }
 
-func (c *VoteLedgerContract) ComputeRevealPayloadHash(ctx contractapi.TransactionContextInterface, candidateID, h, sPrime string) (string, error) {
-	if err := requireNonEmpty(candidateID, "candidateId"); err != nil {
+func (c *VoteLedgerContract) ComputeRevealPayloadHash(ctx contractapi.TransactionContextInterface, candidateIdsJSON, h, sPrime string) (string, error) {
+	candidateIDs, err := parseCandidateIds(candidateIdsJSON)
+	if err != nil {
 		return "", err
 	}
 	hBytes, err := parseHash32(h, "h")
@@ -152,11 +185,11 @@ func (c *VoteLedgerContract) ComputeRevealPayloadHash(ctx contractapi.Transactio
 	if err != nil {
 		return "", err
 	}
-	hash := revealPayloadDigest(candidateID, hBytes, sPrimeBytes)
+	hash := revealPayloadDigest(candidateIdsJSON, hBytes, sPrimeBytes)
 	return mustJSON(PayloadHashView{
-		CandidateID:          candidateID,
+		CandidateIDs:         candidateIDs,
 		RevealPayloadHash:    hashToBase64URL(hash),
 		RevealPayloadHashHex: hex.EncodeToString(hash),
-		HashDefinition:       "sha256('reveal-v1' || uint32be(len(candidateId)) || candidateId || h32 || sPrime32)",
+		HashDefinition:       "sha256('reveal-v2' || uint32be(len(candidateIdsJson)) || candidateIdsJson || h32 || sPrime32)",
 	}), nil
 }

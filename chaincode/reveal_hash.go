@@ -5,13 +5,15 @@ import (
 	"encoding/binary"
 )
 
-func revealPayloadDigest(candidateID string, h []byte, sPrime []byte) []byte {
+// revealPayloadDigest băm trên chuỗi JSON canonical của danh sách ứng viên
+// (vd: ["64f...a1","64f...c3"]). Backend phải truyền đúng chuỗi canonical đó.
+func revealPayloadDigest(candidateIdsJSON string, h []byte, sPrime []byte) []byte {
 	var lenBuf [4]byte
-	binary.BigEndian.PutUint32(lenBuf[:], uint32(len(candidateID)))
+	binary.BigEndian.PutUint32(lenBuf[:], uint32(len(candidateIdsJSON)))
 	hasher := sha256.New()
-	hasher.Write([]byte("reveal-v1"))
+	hasher.Write([]byte("reveal-v2"))
 	hasher.Write(lenBuf[:])
-	hasher.Write([]byte(candidateID))
+	hasher.Write([]byte(candidateIdsJSON))
 	hasher.Write(h)
 	hasher.Write(sPrime)
 	return hasher.Sum(nil)

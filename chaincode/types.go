@@ -44,12 +44,12 @@ type AuditCountsView struct {
 }
 
 type UsedRevealView struct {
-	ElectionID         string `json:"electionId"`
-	CandidateID        string `json:"candidateId"`
-	RevealKey          string `json:"revealKey"`
-	RevealKeyHex       string `json:"revealKeyHex"`
-	RevealPayloadHash  string `json:"revealPayloadHash"`
-	RevealPayloadHashH string `json:"revealPayloadHashHex"`
+	ElectionID         string   `json:"electionId"`
+	CandidateIDs       []string `json:"candidateIds"`
+	RevealKey          string   `json:"revealKey"`
+	RevealKeyHex       string   `json:"revealKeyHex"`
+	RevealPayloadHash  string   `json:"revealPayloadHash"`
+	RevealPayloadHashH string   `json:"revealPayloadHashHex"`
 }
 
 type ReceiptVerifyView struct {
@@ -62,8 +62,8 @@ type ReceiptVerifyView struct {
 }
 
 type PayloadHashView struct {
-	CandidateID          string `json:"candidateId"`
-	RevealPayloadHash    string `json:"revealPayloadHash"`
-	RevealPayloadHashHex string `json:"revealPayloadHashHex"`
-	HashDefinition       string `json:"hashDefinition"`
+	CandidateIDs         []string `json:"candidateIds"`
+	RevealPayloadHash    string   `json:"revealPayloadHash"`
+	RevealPayloadHashHex string   `json:"revealPayloadHashHex"`
+	HashDefinition       string   `json:"hashDefinition"`
 }
