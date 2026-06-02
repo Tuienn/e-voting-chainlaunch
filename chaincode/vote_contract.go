@@ -51,14 +51,9 @@ func (c *VoteLedgerContract) SubmitVote(ctx contractapi.TransactionContextInterf
 		return "", err
 	}
 
-	stats, err := loadStats(ctx, electionID)
-	if err != nil {
-		return "", err
-	}
-	stats.TotalVoteCount++
-	if err := saveStats(ctx, electionID, stats); err != nil {
-		return "", err
-	}
+	// Không cập nhật counter dùng chung: mỗi vote là một composite key riêng nên
+	// nhiều SubmitVote đồng thời không đụng key chung -> tránh MVCC_READ_CONFLICT.
+	// Tổng số phiếu được đếm on-demand từ các record "vote" (xem countVotes).
 
 	return mustJSON(record), nil
 }

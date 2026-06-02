@@ -66,32 +66,12 @@ func (c *VoteLedgerContract) RevealVoteCompact(ctx contractapi.TransactionContex
 		return "", fmt.Errorf("revealKey %s has already been used", hashToBase64URL(keyHash))
 	}
 
+	// Chỉ ghi MỘT key duy nhất cho mỗi ballot: usedReveal (key = hash revealKey).
+	// Bản thân record đã chứa candidateIdsJSON, nên tally từng ứng viên và RevealCount
+	// đều được tổng hợp on-demand từ các record usedReveal (xem aggregateReveals).
+	// Bỏ counter dùng chung (tally per candidate, stats.RevealCount) để các reveal
+	// đồng thời không đụng key chung -> tránh MVCC_READ_CONFLICT.
 	if err := ctx.GetStub().PutState(usedKey, encodeUsedReveal(candidateIdsJSON, payloadHash)); err != nil {
-		return "", err
-	}
-
-	// Tally tăng 1 cho TỪNG ứng viên được chọn trong lá phiếu.
-	for _, candidateID := range candidateIDs {
-		tallyKey, err := compositeKey(ctx, tallyPrefix, electionID, candidateID)
-		if err != nil {
-			return "", err
-		}
-		count, err := loadUint64(ctx, tallyKey)
-		if err != nil {
-			return "", err
-		}
-		if err := ctx.GetStub().PutState(tallyKey, encodeUint64(count+1)); err != nil {
-			return "", err
-		}
-	}
-
-	// RevealCount đếm theo SỐ LÁ PHIẾU đã reveal (1 lần/ballot), không theo số ứng viên.
-	stats, err := loadStats(ctx, electionID)
-	if err != nil {
-		return "", err
-	}
-	stats.RevealCount++
-	if err := saveStats(ctx, electionID, stats); err != nil {
 		return "", err
 	}
 
@@ -109,32 +89,10 @@ func (c *VoteLedgerContract) GetTally(ctx contractapi.TransactionContextInterfac
 	if err := requireNonEmpty(electionID, "electionId"); err != nil {
 		return "", err
 	}
-	iter, err := ctx.GetStub().GetStateByPartialCompositeKey(tallyPrefix, []string{electionID})
+	tally, _, err := aggregateReveals(ctx, electionID)
 	if err != nil {
 		return "", err
 	}
-	defer iter.Close()
-
-	tally := make(map[string]uint64)
-	for iter.HasNext() {
-		kv, err := iter.Next()
-		if err != nil {
-			return "", err
-		}
-		_, parts, err := ctx.GetStub().SplitCompositeKey(kv.Key)
-		if err != nil {
-			return "", err
-		}
-		if len(parts) != 2 {
-			continue
-		}
-		count, err := decodeUint64(kv.Value)
-		if err != nil {
-			return "", err
-		}
-		tally[parts[1]] = count
-	}
-
 	return mustJSON(TallyView{ElectionID: electionID, Tally: tally}), nil
 }
 

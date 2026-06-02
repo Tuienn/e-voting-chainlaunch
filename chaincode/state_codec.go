@@ -52,45 +52,56 @@ func loadMerkleRoot(ctx contractapi.TransactionContextInterface, electionID stri
 	return record, nil
 }
 
-func encodeStats(stats Stats) []byte {
-	out := make([]byte, 0, 20)
-	out = appendUvarint(out, stats.TotalVoteCount)
-	return appendUvarint(out, stats.RevealCount)
+// countVotes đếm số record "vote" của một election bằng range query trên composite
+// key, thay cho counter dùng chung (vốn gây MVCC_READ_CONFLICT khi vote đồng thời).
+func countVotes(ctx contractapi.TransactionContextInterface, electionID string) (uint64, error) {
+	iter, err := ctx.GetStub().GetStateByPartialCompositeKey(votePrefix, []string{electionID})
+	if err != nil {
+		return 0, err
+	}
+	defer iter.Close()
+
+	var total uint64
+	for iter.HasNext() {
+		if _, err := iter.Next(); err != nil {
+			return 0, err
+		}
+		total++
+	}
+	return total, nil
 }
 
-func decodeStats(data []byte) (Stats, error) {
-	if len(data) == 0 {
-		return Stats{}, nil
+// aggregateReveals duyệt các record usedReveal của election để dựng tally theo từng
+// ứng viên và đếm số lá phiếu đã reveal. Vì candidateIds được lưu sẵn trong từng
+// record, đây là nguồn sự thật duy nhất — không cần counter tally/RevealCount riêng.
+func aggregateReveals(ctx contractapi.TransactionContextInterface, electionID string) (map[string]uint64, uint64, error) {
+	iter, err := ctx.GetStub().GetStateByPartialCompositeKey(usedRevealPrefix, []string{electionID})
+	if err != nil {
+		return nil, 0, err
 	}
-	total, n := binary.Uvarint(data)
-	if n <= 0 {
-		return Stats{}, errors.New("invalid stats total vote count")
-	}
-	reveals, m := binary.Uvarint(data[n:])
-	if m <= 0 {
-		return Stats{}, errors.New("invalid stats reveal count")
-	}
-	return Stats{TotalVoteCount: total, RevealCount: reveals}, nil
-}
+	defer iter.Close()
 
-func loadStats(ctx contractapi.TransactionContextInterface, electionID string) (Stats, error) {
-	key, err := statsKey(ctx, electionID)
-	if err != nil {
-		return Stats{}, err
+	tally := make(map[string]uint64)
+	var revealCount uint64
+	for iter.HasNext() {
+		kv, err := iter.Next()
+		if err != nil {
+			return nil, 0, err
+		}
+		candidateIdsJSON, _, err := decodeUsedReveal(kv.Value)
+		if err != nil {
+			return nil, 0, err
+		}
+		candidateIDs, err := parseCandidateIds(candidateIdsJSON)
+		if err != nil {
+			return nil, 0, err
+		}
+		for _, candidateID := range candidateIDs {
+			tally[candidateID]++
+		}
+		revealCount++
 	}
-	data, err := ctx.GetStub().GetState(key)
-	if err != nil {
-		return Stats{}, err
-	}
-	return decodeStats(data)
-}
-
-func saveStats(ctx contractapi.TransactionContextInterface, electionID string, stats Stats) error {
-	key, err := statsKey(ctx, electionID)
-	if err != nil {
-		return err
-	}
-	return ctx.GetStub().PutState(key, encodeStats(stats))
+	return tally, revealCount, nil
 }
 
 // encodeUsedReveal lưu chuỗi JSON canonical của danh sách ứng viên kèm payload hash.
@@ -119,29 +130,4 @@ func appendUvarint(out []byte, value uint64) []byte {
 	var buf [10]byte
 	n := binary.PutUvarint(buf[:], value)
 	return append(out, buf[:n]...)
-}
-
-func encodeUint64(value uint64) []byte {
-	var buf [10]byte
-	n := binary.PutUvarint(buf[:], value)
-	return buf[:n]
-}
-
-func decodeUint64(data []byte) (uint64, error) {
-	value, n := binary.Uvarint(data)
-	if n <= 0 {
-		return 0, errors.New("invalid uint64 state")
-	}
-	return value, nil
-}
-
-func loadUint64(ctx contractapi.TransactionContextInterface, key string) (uint64, error) {
-	data, err := ctx.GetStub().GetState(key)
-	if err != nil {
-		return 0, err
-	}
-	if len(data) == 0 {
-		return 0, nil
-	}
-	return decodeUint64(data)
 }

@@ -25,11 +25,6 @@ type MerkleRootView struct {
 	CommitTxID        string `json:"txId,omitempty"`
 }
 
-type Stats struct {
-	TotalVoteCount uint64 `json:"totalVoteCount"`
-	RevealCount    uint64 `json:"revealCount"`
-}
-
 type TallyView struct {
 	ElectionID string            `json:"electionId"`
 	Tally      map[string]uint64 `json:"tally"`

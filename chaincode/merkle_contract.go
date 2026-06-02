@@ -21,12 +21,15 @@ func (c *VoteLedgerContract) CommitMerkleRoot(ctx contractapi.TransactionContext
 		return "", err
 	}
 
-	stats, err := loadStats(ctx, electionID)
+	// Đếm trực tiếp số record "vote" trên ledger thay vì đọc counter dùng chung.
+	// Range read này cũng tạo ràng buộc MVCC mong muốn: nếu có SubmitVote commit xen
+	// vào trong lúc chốt sổ, CommitMerkleRoot sẽ bị invalid và phải chạy lại với count mới.
+	totalVoteCount, err := countVotes(ctx, electionID)
 	if err != nil {
 		return "", err
 	}
-	if stats.TotalVoteCount != voteCount {
-		return "", fmt.Errorf("voteCount mismatch: stats=%d arg=%d", stats.TotalVoteCount, voteCount)
+	if totalVoteCount != voteCount {
+		return "", fmt.Errorf("voteCount mismatch: ledger=%d arg=%d", totalVoteCount, voteCount)
 	}
 
 	key, err := compositeKey(ctx, rootPrefix, electionID)
@@ -108,7 +111,11 @@ func (c *VoteLedgerContract) VerifyVoteReceipt(ctx contractapi.TransactionContex
 }
 
 func (c *VoteLedgerContract) GetAuditCounts(ctx contractapi.TransactionContextInterface, electionID string) (string, error) {
-	stats, err := loadStats(ctx, electionID)
+	totalVoteCount, err := countVotes(ctx, electionID)
+	if err != nil {
+		return "", err
+	}
+	_, revealCount, err := aggregateReveals(ctx, electionID)
 	if err != nil {
 		return "", err
 	}
@@ -118,9 +125,9 @@ func (c *VoteLedgerContract) GetAuditCounts(ctx contractapi.TransactionContextIn
 	}
 	return mustJSON(AuditCountsView{
 		ElectionID:      electionID,
-		TotalVoteCount:  stats.TotalVoteCount,
-		RevealCount:     stats.RevealCount,
+		TotalVoteCount:  totalVoteCount,
+		RevealCount:     revealCount,
 		RootCommitted:   root.Committed,
-		RevealVoteMatch: stats.TotalVoteCount == stats.RevealCount,
+		RevealVoteMatch: totalVoteCount == revealCount,
 	}), nil
 }
