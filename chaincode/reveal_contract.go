@@ -71,7 +71,8 @@ func (c *VoteLedgerContract) RevealVoteCompact(ctx contractapi.TransactionContex
 	// đều được tổng hợp on-demand từ các record usedReveal (xem aggregateReveals).
 	// Bỏ counter dùng chung (tally per candidate, stats.RevealCount) để các reveal
 	// đồng thời không đụng key chung -> tránh MVCC_READ_CONFLICT.
-	if err := ctx.GetStub().PutState(usedKey, encodeUsedReveal(candidateIdsJSON, payloadHash)); err != nil {
+	txID := ctx.GetStub().GetTxID()
+	if err := ctx.GetStub().PutState(usedKey, encodeUsedReveal(candidateIdsJSON, payloadHash, txID)); err != nil {
 		return "", err
 	}
 
@@ -82,6 +83,7 @@ func (c *VoteLedgerContract) RevealVoteCompact(ctx contractapi.TransactionContex
 		RevealKeyHex:       hex.EncodeToString(keyHash),
 		RevealPayloadHash:  hashToBase64URL(payloadHash),
 		RevealPayloadHashH: hex.EncodeToString(payloadHash),
+		TransactionID:      txID,
 	}), nil
 }
 
@@ -112,7 +114,7 @@ func (c *VoteLedgerContract) GetUsedReveal(ctx contractapi.TransactionContextInt
 	if len(data) == 0 {
 		return "", fmt.Errorf("revealKey %s has not been used", hashToBase64URL(keyHash))
 	}
-	candidateIdsJSON, payloadHash, err := decodeUsedReveal(data)
+	candidateIdsJSON, payloadHash, txID, err := decodeUsedReveal(data)
 	if err != nil {
 		return "", err
 	}
@@ -127,6 +129,7 @@ func (c *VoteLedgerContract) GetUsedReveal(ctx contractapi.TransactionContextInt
 		RevealKeyHex:       hex.EncodeToString(keyHash),
 		RevealPayloadHash:  hashToBase64URL(payloadHash),
 		RevealPayloadHashH: hex.EncodeToString(payloadHash),
+		TransactionID:      txID,
 	}), nil
 }
 

@@ -45,6 +45,7 @@ type UsedRevealView struct {
 	RevealKeyHex       string   `json:"revealKeyHex"`
 	RevealPayloadHash  string   `json:"revealPayloadHash"`
 	RevealPayloadHashH string   `json:"revealPayloadHashHex"`
+	TransactionID      string   `json:"transactionId,omitempty"`
 }
 
 type ReceiptVerifyView struct {

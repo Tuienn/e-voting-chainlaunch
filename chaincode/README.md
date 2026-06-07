@@ -326,9 +326,9 @@ Tất cả state được lưu bằng composite key trong World State của Fabr
 5. Tính usedKey = composite(usedReveal, electionID, base64URL(keyHash))
 6. GetState(usedKey) → kiểm tra revealKey chưa được dùng
    → Nếu đã tồn tại: từ chối (chặn replay attack on-chain)
-7. PutState(usedKey, encode(candidateIdsJson, payloadHash))
-   (đánh dấu revealKey đã dùng, lưu kèm chuỗi candidateIds và payloadHash)
-8. Trả UsedRevealView JSON
+7. PutState(usedKey, encode(candidateIdsJson, payloadHash, txId))
+   (đánh dấu revealKey đã dùng, lưu kèm chuỗi candidateIds, payloadHash và txId của transaction này)
+8. Trả UsedRevealView JSON (bao gồm transactionId)
 ```
 
 > **Lưu ý:** Mỗi RevealVoteCompact chỉ ghi đúng 1 key `usedReveal` (key riêng per ballot). Không có counter tally hay RevealCount dùng chung — tránh MVCC_READ_CONFLICT khi nhiều reveal đồng thời. Tally và RevealCount được tổng hợp on-demand bởi `GetTally` / `GetAuditCounts`.
@@ -342,7 +342,8 @@ Tất cả state được lưu bằng composite key trong World State của Fabr
   "revealKey": "base64url-encoded-key",
   "revealKeyHex": "hex-encoded-key",
   "revealPayloadHash": "base64url-encoded-hash",
-  "revealPayloadHashHex": "hex-encoded-hash"
+  "revealPayloadHashHex": "hex-encoded-hash",
+  "transactionId": "hex-64-chars-fabric-txid"
 }
 ```
 
@@ -417,8 +418,9 @@ Tất cả state được lưu bằng composite key trong World State của Fabr
 ```
 1. Parse revealKey → keyHash
 2. compositeKey(usedReveal, electionID, base64URL(keyHash))
-3. GetState → decode (candidateIdsJson, payloadHash) → parse candidateIds []string
-4. Trả UsedRevealView (candidateIds là mảng)
+3. GetState → decode (candidateIdsJson, payloadHash, txId) → parse candidateIds []string
+   (tương thích ngược: record cũ không có txId → transactionId = "")
+4. Trả UsedRevealView (candidateIds là mảng, transactionId là txId gốc của RevealVoteCompact)
 ```
 
 ---
@@ -565,6 +567,7 @@ UsedRevealView {
     RevealKeyHex:       string   // hex 64 chars
     RevealPayloadHash:  string   // base64URL encoded
     RevealPayloadHashH: string   // hex 64 chars
+    TransactionID:      string   // txId của transaction RevealVoteCompact gốc (omitempty; "" với record cũ)
 }
 
 // Kết quả xác minh receipt

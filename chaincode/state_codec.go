@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 
@@ -88,7 +89,7 @@ func aggregateReveals(ctx contractapi.TransactionContextInterface, electionID st
 		if err != nil {
 			return nil, 0, err
 		}
-		candidateIdsJSON, _, err := decodeUsedReveal(kv.Value)
+		candidateIdsJSON, _, _, err := decodeUsedReveal(kv.Value)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -104,26 +105,40 @@ func aggregateReveals(ctx contractapi.TransactionContextInterface, electionID st
 	return tally, revealCount, nil
 }
 
-// encodeUsedReveal lưu chuỗi JSON canonical của danh sách ứng viên kèm payload hash.
-// Cơ chế uvarint-len đã variable-length nên dùng được cho chuỗi JSON độ dài bất kỳ.
-func encodeUsedReveal(candidateIdsJSON string, payloadHash []byte) []byte {
-	out := make([]byte, 0, len(candidateIdsJSON)+34)
+// encodeUsedReveal lưu chuỗi JSON canonical của danh sách ứng viên kèm payload hash và txId.
+// Layout: [uvarint(len(candidateIdsJSON))][candidateIdsJSON][payloadHash(32B)][txIdBytes(32B)]
+// txID là hex string của Fabric transaction (SHA-256 → 64 hex chars = 32 bytes).
+func encodeUsedReveal(candidateIdsJSON string, payloadHash []byte, txID string) []byte {
+	txIDBytes, err := hex.DecodeString(txID)
+	if err != nil || len(txIDBytes) != 32 {
+		txIDBytes = nil
+	}
+	out := make([]byte, 0, len(candidateIdsJSON)+34+32)
 	out = appendUvarint(out, uint64(len(candidateIdsJSON)))
 	out = append(out, []byte(candidateIdsJSON)...)
-	return append(out, payloadHash...)
+	out = append(out, payloadHash...)
+	return append(out, txIDBytes...)
 }
 
-func decodeUsedReveal(data []byte) (string, []byte, error) {
+// decodeUsedReveal trả (candidateIdsJSON, payloadHash, txID, error).
+// Tương thích ngược: record cũ (end+32 bytes) trả txID = ""; record mới (end+64 bytes) trả txID đầy đủ.
+func decodeUsedReveal(data []byte) (string, []byte, string, error) {
 	candidateLen, n := binary.Uvarint(data)
 	if n <= 0 {
-		return "", nil, errors.New("invalid used reveal candidate length")
+		return "", nil, "", errors.New("invalid used reveal candidate length")
 	}
 	start := n
 	end := start + int(candidateLen)
-	if len(data) != end+32 {
-		return "", nil, errors.New("invalid used reveal state")
+	switch len(data) {
+	case end + 32:
+		return string(data[start:end]), append([]byte(nil), data[end:]...), "", nil
+	case end + 64:
+		payloadHash := append([]byte(nil), data[end:end+32]...)
+		txID := hex.EncodeToString(data[end+32 : end+64])
+		return string(data[start:end]), payloadHash, txID, nil
+	default:
+		return "", nil, "", errors.New("invalid used reveal state")
 	}
-	return string(data[start:end]), append([]byte(nil), data[end:]...), nil
 }
 
 func appendUvarint(out []byte, value uint64) []byte {
